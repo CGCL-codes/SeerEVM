@@ -57,14 +57,16 @@ type EVMInterpreter struct {
 	checkpoint     bool   // Whether to store checkpoint snapshots
 	readOnly       bool   // Whether to throw on stateful modifications
 	repair         bool   // Whether the repair needs to be conducted at the end of a transaction execution (only enabled during pre-execution)
+	fullStorage    bool   // Whether to store all state variable versions in the mvcache
 	returnData     []byte // Last CALL's return data for subsequent reuse
 
-	callMap     map[int]*Snapshot                                      // records the call stack mapping from the call depth to the snapshot
-	repairedLoc map[common.Address]map[common.Hash]map[string]struct{} // records write location leading to pre-execution repair
+	callMap           map[int]*Snapshot                                      // records the call stack mapping from the call depth to the snapshot
+	repairedLoc       map[common.Address]map[common.Hash]map[string]struct{} // records write location leading to pre-execution repair
+	txGasDistribution map[common.Hash]int
 }
 
 // NewEVMInterpreter returns a new instance of the Interpreter.
-func NewEVMInterpreter(evm *EVM, isPreExecution, isPerceptron, checkpoint bool) *EVMInterpreter {
+func NewEVMInterpreter(evm *EVM, isPreExecution, isPerceptron, checkpoint, fullStorage bool, txGasDistribution map[common.Hash]int) *EVMInterpreter {
 	// If jump table was not initialised we set the default one.
 	var table *JumpTable
 	switch {
@@ -117,14 +119,16 @@ func NewEVMInterpreter(evm *EVM, isPreExecution, isPerceptron, checkpoint bool) 
 	}
 	evm.Config.ExtraEips = extraEips
 	return &EVMInterpreter{
-		evm:            evm,
-		table:          table,
-		isPreExecution: isPreExecution,
-		isFastEnabled:  false,
-		isPerceptron:   isPerceptron,
-		checkpoint:     checkpoint,
-		repair:         false,
-		repairedLoc:    make(map[common.Address]map[common.Hash]map[string]struct{}),
+		evm:               evm,
+		table:             table,
+		isPreExecution:    isPreExecution,
+		isFastEnabled:     false,
+		isPerceptron:      isPerceptron,
+		checkpoint:        checkpoint,
+		repair:            false,
+		fullStorage:       fullStorage,
+		repairedLoc:       make(map[common.Address]map[common.Hash]map[string]struct{}),
+		txGasDistribution: txGasDistribution,
 	}
 }
 

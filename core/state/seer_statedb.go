@@ -359,7 +359,7 @@ func (s *SeerStateDB) checkStorageVersion(addr common.Address, hash common.Hash,
 }
 
 // ValidateReadSet validates if the current read set conflicts with other txs' write sets
-func (s *SeerStateDB) ValidateReadSet(lastReads []*ReadLoc, storageVersion, index int) bool {
+func (s *SeerStateDB) ValidateReadSet(lastReads []*ReadLoc, storageVersion int) bool {
 	for _, read := range lastReads {
 		var curVersion int
 		if !read.Location.storageMarker {

@@ -1,5 +1,5 @@
 ## Description
-The repository hosts the implementation of SeerEVM, an advanced transaction execution engine for Ethereum blockchain.
+The repository hosts the implementation of SeerEVM, an advanced transaction execution engine for EVM-compatible blockchains.
 
 SeerEVM incorporates fine-grained branch prediction to fully exploit pre-execution effectiveness. Seer predicts state-related branches using a two-level prediction approach, reducing inconsistent execution paths more efficiently than executing all possible branches. To enable effective reuse of pre-execution results, Seer employs checkpoint-based fast-path execution, enhancing transaction execution for both successful and unsuccessful predictions.
 

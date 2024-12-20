@@ -6,6 +6,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/params"
+	"github.com/shirou/gopsutil/v4/mem"
 	"log"
 	"math/big"
 	"seerEVM/core/state"
@@ -14,6 +15,7 @@ import (
 	"seerEVM/minHeap"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -51,9 +53,12 @@ type SeerThread struct {
 	chainConfig *params.ChainConfig
 
 	// 记录分支预测命中率
-	totalPredictions       int
-	unsatisfiedPredictions int
-	satisfiedTxs           int
+	cTotalPredictions       int
+	nTotalPredictions       int
+	cUnsatisfiedPredictions int
+	nUnsatisfiedPredictions int
+	cSatisfiedTxs           int
+	nSatisfiedTxs           int
 
 	// 接收交易的通道
 	txSource   <-chan []*types.Transaction
@@ -68,23 +73,26 @@ func NewThread(threadId int, stateDB *state.StateDB, publicStateDB *state.SeerSt
 	commitHeap *minHeap.CommitHeap, varTable *vm.VarTable, mvCache *state.MVCache, preExecutionTable *vm.PreExecutionTable,
 	block *types.Block, blockContext vm.BlockContext, chainConfig *params.ChainConfig) *SeerThread {
 	st := &SeerThread{
-		ThreadID:               threadId,
-		commonStateDB:          stateDB,
-		publicStateDB:          publicStateDB,
-		simulationStateDB:      nil,
-		constructionStateDB:    stateDbForConstruction,
-		txStateDB:              nil,
-		taskPool:               readyHeap,
-		commitPool:             commitHeap,
-		varTable:               varTable,
-		mvCache:                mvCache,
-		preExecutionTable:      preExecutionTable,
-		block:                  block,
-		blockContext:           blockContext,
-		chainConfig:            chainConfig,
-		totalPredictions:       0,
-		unsatisfiedPredictions: 0,
-		satisfiedTxs:           0,
+		ThreadID:                threadId,
+		commonStateDB:           stateDB,
+		publicStateDB:           publicStateDB,
+		simulationStateDB:       nil,
+		constructionStateDB:     stateDbForConstruction,
+		txStateDB:               nil,
+		taskPool:                readyHeap,
+		commitPool:              commitHeap,
+		varTable:                varTable,
+		mvCache:                 mvCache,
+		preExecutionTable:       preExecutionTable,
+		block:                   block,
+		blockContext:            blockContext,
+		chainConfig:             chainConfig,
+		cTotalPredictions:       0,
+		nTotalPredictions:       0,
+		cUnsatisfiedPredictions: 0,
+		nUnsatisfiedPredictions: 0,
+		cSatisfiedTxs:           0,
+		nSatisfiedTxs:           0,
 	}
 	return st
 }
@@ -144,14 +152,14 @@ func (st *SeerThread) SingleRun(txNum int, PrintDetails bool) {
 }
 
 // PreExecution executes transactions speculatively with a branch prediction approach
-func (st *SeerThread) PreExecution(txSet map[common.Hash]*types.Transaction, tipMap map[common.Hash]*big.Int, isNative, enablePerceptron, storeCheckpoint bool) (map[common.Hash]vm.ReadSet, map[common.Hash]vm.WriteSet) {
+func (st *SeerThread) PreExecution(txSet map[common.Hash]*types.Transaction, tipMap map[common.Hash]*big.Int, isNative, enablePerceptron, storeCheckpoint bool, txGasDistribution map[common.Hash]int) (map[common.Hash]vm.ReadSet, map[common.Hash]vm.WriteSet) {
 	var (
 		header = st.block.Header()
 		gp     = new(GasPool).AddGas(st.block.GasLimit())
 	)
 
 	for _, tx := range st.block.Transactions() {
-		st.singlePreEexcution(tx, header, txSet, tipMap, gp, isNative, false, enablePerceptron, storeCheckpoint)
+		st.singlePreEexcution(tx, header, txSet, tipMap, gp, isNative, false, enablePerceptron, storeCheckpoint, false, txGasDistribution)
 	}
 	// 清理多版本缓存
 	st.mvCache.ClearCache()
@@ -159,7 +167,7 @@ func (st *SeerThread) PreExecution(txSet map[common.Hash]*types.Transaction, tip
 }
 
 // PreExecutionWithDisorder executes transactions speculatively with a branch prediction approach (under the case of disordered tx input)
-func (st *SeerThread) PreExecutionWithDisorder(isNative, enableRepair, enablePerceptron bool) time.Duration {
+func (st *SeerThread) PreExecutionWithDisorder(isNative, enableRepair, enablePerceptron, storeCheckpoint, fullStorage bool, recorder *Recorder) time.Duration {
 	block := <-st.blkChannel
 	txMap := <-st.txSet
 	tipMap := <-st.tip
@@ -171,7 +179,7 @@ func (st *SeerThread) PreExecutionWithDisorder(isNative, enableRepair, enablePer
 		processedTxs = make([]*types.Transaction, 0, len(txMap))
 	)
 
-	t1 := time.Now()
+	t0 := time.Now()
 	for {
 		if len(processedTxs) == len(txMap) {
 			break
@@ -180,10 +188,23 @@ func (st *SeerThread) PreExecutionWithDisorder(isNative, enableRepair, enablePer
 		case insertTx := <-st.disorder:
 			if !enableRepair {
 				// 立刻执行
-				st.singlePreEexcution(insertTx, header, txMap, tipMap, gp, isNative, enableRepair, enablePerceptron, true)
+				t := time.Now()
+				st.singlePreEexcution(insertTx, header, txMap, tipMap, gp, isNative, enableRepair, enablePerceptron, storeCheckpoint, fullStorage, nil)
 				processedTxs = append(processedTxs, insertTx)
+				e := time.Since(t)
+				if recorder != nil && recorder.GetObserveIndicator() {
+					complicatedTxs := recorder.GetComplicatedMap()
+					if _, ok := complicatedTxs[insertTx.Hash()]; ok {
+						recorder.RecordCtxPreLatency(e.Microseconds())
+					} else {
+						if int(insertTx.Gas()) > 21000 {
+							recorder.RecordNtxPreLatency(e.Microseconds())
+						}
+					}
+				}
 				continue
 			}
+			t := time.Now()
 			insertTip := math.BigMin(insertTx.GasTipCap(), new(big.Int).Sub(insertTx.GasFeeCap(), block.BaseFee()))
 			if len(processedTxs) > 0 {
 				latest := processedTxs[len(processedTxs)-1]
@@ -203,29 +224,53 @@ func (st *SeerThread) PreExecutionWithDisorder(isNative, enableRepair, enablePer
 				}
 			}
 			// 立刻执行
-			st.singlePreEexcution(insertTx, header, txMap, tipMap, gp, isNative, enableRepair, enablePerceptron, true)
+			st.singlePreEexcution(insertTx, header, txMap, tipMap, gp, isNative, enableRepair, enablePerceptron, storeCheckpoint, fullStorage, nil)
 			processedTxs = append(processedTxs, insertTx)
+			e := time.Since(t)
+			if recorder != nil && recorder.GetObserveIndicator() {
+				complicatedTxs := recorder.GetComplicatedMap()
+				if _, ok := complicatedTxs[insertTx.Hash()]; ok {
+					recorder.RecordCtxPreLatency(e.Microseconds())
+				} else {
+					if int(insertTx.Gas()) > 21000 {
+						recorder.RecordNtxPreLatency(e.Microseconds())
+					}
+				}
+			}
 		default:
 			// 立刻执行
+			t := time.Now()
 			if len(executionQueue) == 0 {
 				continue
 			}
 			nextTx := executionQueue[0]
-			st.singlePreEexcution(nextTx, header, txMap, tipMap, gp, isNative, enableRepair, enablePerceptron, true)
+			st.singlePreEexcution(nextTx, header, txMap, tipMap, gp, isNative, enableRepair, enablePerceptron, storeCheckpoint, fullStorage, nil)
 			executionQueue = executionQueue[1:]
 			processedTxs = append(processedTxs, nextTx)
+			e := time.Since(t)
+			if recorder != nil && recorder.GetObserveIndicator() {
+				complicatedTxs := recorder.GetComplicatedMap()
+				if _, ok := complicatedTxs[nextTx.Hash()]; ok {
+					recorder.RecordCtxPreLatency(e.Microseconds())
+				} else {
+					if int(nextTx.Gas()) > 21000 {
+						recorder.RecordNtxPreLatency(e.Microseconds())
+					}
+				}
+			}
 		}
 	}
-	e1 := time.Since(t1)
-	fmt.Printf("Pre-execution latency is: %s\n", e1)
+	e0 := time.Since(t0)
+	//fmt.Printf("Pre-execution latency is: %s\n", e0)
 
 	// 清理多版本缓存
 	st.mvCache.ClearCache()
-	return e1
+	return e0
 }
 
-func (st *SeerThread) singlePreEexcution(tx *types.Transaction, header *types.Header, txMap map[common.Hash]*types.Transaction, tipMap map[common.Hash]*big.Int, gp *GasPool, isNative, enableRepair, enablePerceptron, storeCheckpoint bool) {
+func (st *SeerThread) singlePreEexcution(tx *types.Transaction, header *types.Header, txMap map[common.Hash]*types.Transaction, tipMap map[common.Hash]*big.Int, gp *GasPool, isNative, enableRepair, enablePerceptron, storeCheckpoint, fullStorage bool, txGasDistribution map[common.Hash]int) {
 	var stateDB vm.StateDB
+	var vmenv *vm.EVM
 	if isNative {
 		stateDB = st.commonStateDB.Copy()
 	} else {
@@ -239,8 +284,9 @@ func (st *SeerThread) singlePreEexcution(tx *types.Transaction, header *types.He
 	}
 	tip := tipMap[tx.Hash()]
 	txContext := NewEVMTxContext(msg, tx.Hash(), tip)
-	vmenv := vm.NewEVM2(st.blockContext, txContext, stateDB, st.varTable, st.preExecutionTable,
-		st.mvCache, st.chainConfig, vm.Config{EnablePreimageRecording: false}, true, enablePerceptron, storeCheckpoint)
+
+	vmenv = vm.NewEVM2(st.blockContext, txContext, stateDB, st.varTable, st.preExecutionTable,
+		st.mvCache, st.chainConfig, vm.Config{EnablePreimageRecording: false}, true, enablePerceptron, storeCheckpoint, fullStorage, txGasDistribution)
 
 	res := st.preExecutionTable.InitialResult(tx.Hash())
 	res.UpdateTxContext(txContext)
@@ -260,14 +306,14 @@ func (st *SeerThread) singlePreEexcution(tx *types.Transaction, header *types.He
 	//st.commonStateDB.AddBalance(msg.From, balanceCheck)
 	stateDB.AddBalance(msg.From, balanceCheck)
 
-	_ = applySeerTransaction(msg, gp, vmenv, txMap, tipMap, enableRepair, enablePerceptron, storeCheckpoint)
+	_ = applySeerTransaction(msg, gp, vmenv, txMap, tipMap, enableRepair, enablePerceptron, storeCheckpoint, fullStorage)
 	//if err3 != nil {
 	//	fmt.Printf("could not apply tx [%v]: %v\n", tx.Hash().Hex(), err3)
 	//}
 }
 
 // FastExecution executes transactions in a fast-path mode using a single thread
-func (st *SeerThread) FastExecution(stateDB *state.StateDB, recorder *Recorder, enableRepair, enablePerceptron, enableFast, isStatistics bool, fileName string) (*common.Hash, types.Receipts, []*types.Log, uint64, int, error) {
+func (st *SeerThread) FastExecution(stateDB *state.StateDB, recorder *Recorder, enableRepair, enablePerceptron, enableFast, isStatistics, testMemory bool, fileName string) (*common.Hash, types.Receipts, []*types.Log, uint64, int, float64, error) {
 	var (
 		receipts    types.Receipts
 		usedGas     = new(uint64)
@@ -277,7 +323,22 @@ func (st *SeerThread) FastExecution(stateDB *state.StateDB, recorder *Recorder, 
 		allLogs     []*types.Log
 		gp          = new(GasPool).AddGas(1000 * st.block.GasLimit())
 		ctxNum      int
+		memUsed     float64
+		wg          sync.WaitGroup
 	)
+
+	if testMemory {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var sumUsed float64
+			for j := 0; j < len(st.block.Transactions()); j++ {
+				memInfo, _ := mem.VirtualMemory()
+				sumUsed += memInfo.UsedPercent
+			}
+			memUsed = sumUsed / float64(len(st.block.Transactions()))
+		}()
+	}
 
 	t := time.Now()
 	// Iterate over and process the individual transactions
@@ -286,7 +347,7 @@ func (st *SeerThread) FastExecution(stateDB *state.StateDB, recorder *Recorder, 
 		txContext := ret.GetTxContext()
 		msg, err := TransactionToMessage(tx, types.MakeSigner(st.chainConfig, header.Number), header.BaseFee)
 		if err != nil {
-			return nil, nil, nil, 0, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
+			return nil, nil, nil, 0, 0, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 		}
 
 		// 避免Nonce错误
@@ -303,10 +364,10 @@ func (st *SeerThread) FastExecution(stateDB *state.StateDB, recorder *Recorder, 
 		stateDB.AddBalance(msg.From, balanceCheck)
 
 		vmenv := vm.NewEVM2(st.blockContext, txContext, stateDB, st.varTable, st.preExecutionTable, st.mvCache,
-			st.chainConfig, vm.Config{EnablePreimageRecording: false}, false, false, false)
+			st.chainConfig, vm.Config{EnablePreimageRecording: false}, false, false, false, false, nil)
 		receipt, isContractCall, err := applyFastPath(msg, tx, vmenv, ret, gp, blockNumber, blockHash, usedGas, st, recorder, enableRepair, enablePerceptron, enableFast)
 		if err != nil {
-			return nil, nil, nil, 0, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
+			return nil, nil, nil, 0, 0, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 		}
 		if isContractCall {
 			ctxNum++
@@ -319,11 +380,15 @@ func (st *SeerThread) FastExecution(stateDB *state.StateDB, recorder *Recorder, 
 	e := time.Since(t)
 	fmt.Printf("Execution latency is: %s\n", e)
 
+	if testMemory {
+		wg.Wait()
+	}
+
 	// 更新分支历史与感知器
 	if enablePerceptron {
 		err := st.UpdateBranchHistory()
 		if err != nil {
-			return nil, nil, nil, 0, 0, err
+			return nil, nil, nil, 0, 0, 0, err
 		}
 	}
 	// 清理分支变量表与预执行表的冗余项
@@ -337,12 +402,12 @@ func (st *SeerThread) FastExecution(stateDB *state.StateDB, recorder *Recorder, 
 	// Fail if Shanghai not enabled and len(withdrawals) is non-zero.
 	withdrawals := st.block.Withdrawals()
 	if len(withdrawals) > 0 && !st.chainConfig.IsShanghai(st.block.Time()) {
-		return nil, nil, nil, 0, 0, fmt.Errorf("withdrawals before shanghai")
+		return nil, nil, nil, 0, 0, memUsed, fmt.Errorf("withdrawals before shanghai")
 	}
 	// Finalize the block, applying any consensus engine specific extras (e.g. block rewards)
 	accumulateRewards(st.chainConfig, stateDB, header, st.block.Uncles())
 	root := stateDB.IntermediateRoot(st.chainConfig.IsEIP158(header.Number))
-	return &root, receipts, allLogs, *usedGas, ctxNum, nil
+	return &root, receipts, allLogs, *usedGas, ctxNum, memUsed, nil
 }
 
 // FastExecutionRemovingIO executes transactions in a fast-path mode withou modifying states for removing I/O
@@ -378,7 +443,7 @@ func (st *SeerThread) FastExecutionRemovingIO(stateDB *state.StateDB) error {
 		stateDB.AddBalance(msg.From, balanceCheck)
 
 		vmenv := vm.NewEVM2(st.blockContext, txContext, stateDB, st.varTable, st.preExecutionTable, st.mvCache,
-			st.chainConfig, vm.Config{EnablePreimageRecording: false}, false, false, false)
+			st.chainConfig, vm.Config{EnablePreimageRecording: false}, false, false, false, false, nil)
 		_, _, err = applyFastPath(msg, tx, vmenv, ret, gp, blockNumber, blockHash, usedGas, st, nil, true, true, true)
 		if err != nil {
 			return fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
@@ -409,7 +474,7 @@ func (st *SeerThread) executeTaskFastPath(task *minHeap.ReadyItem, PrintDetails 
 		log.Panic(fmt.Errorf("could not format transaction %+v to message", task))
 	}
 	vmenv := vm.NewEVM2(st.blockContext, txContext, st.txStateDB, st.varTable, st.preExecutionTable, st.mvCache,
-		st.chainConfig, vm.Config{EnablePreimageRecording: false}, false, false, false)
+		st.chainConfig, vm.Config{EnablePreimageRecording: false}, false, false, false, false, nil)
 	st.txStateDB.SetTxContext(tx.Hash(), task.Index)
 
 	// 避免Nonce错误
@@ -471,7 +536,7 @@ func (st *SeerThread) executeTask(task *minHeap.ReadyItem, PrintDetails bool) ([
 	st.txStateDB = state.NewIcseTxStateDB(tx, task.Index, task.Incarnation, task.StorageVersion, publicStateDB)
 
 	// create evm
-	vmenv := vm.NewEVM(st.blockContext, vm.TxContext{}, st.txStateDB, st.chainConfig, vm.Config{EnablePreimageRecording: false}, false, false, false)
+	vmenv := vm.NewEVM(st.blockContext, vm.TxContext{}, st.txStateDB, st.chainConfig, vm.Config{EnablePreimageRecording: false})
 	msg, err := TransactionToMessage(tx, types.MakeSigner(st.chainConfig, header.Number), header.BaseFee)
 	if err != nil {
 		log.Panic(fmt.Errorf("could not format transaction %+v to message", task))
@@ -583,9 +648,12 @@ func (st *SeerThread) UpdateBranchHistory() error {
 	return nil
 }
 
-func (st *SeerThread) IncrementTotal()              { st.totalPredictions++ }
-func (st *SeerThread) IncrementUnsatisfied()        { st.unsatisfiedPredictions++ }
-func (st *SeerThread) IncrementSatisfiedTxs()       { st.satisfiedTxs++ }
+func (st *SeerThread) IncrementCTotal()             { st.cTotalPredictions++ }
+func (st *SeerThread) IncrementNTotal()             { st.nTotalPredictions++ }
+func (st *SeerThread) IncrementCUnsatisfied()       { st.cUnsatisfiedPredictions++ }
+func (st *SeerThread) IncrementNUnsatisfied()       { st.nUnsatisfiedPredictions++ }
+func (st *SeerThread) IncrementCSatisfiedTxs()      { st.cSatisfiedTxs++ }
+func (st *SeerThread) IncrementNSatisfiedTxs()      { st.nSatisfiedTxs++ }
 func (st *SeerThread) UpdateBlock(blk *types.Block) { st.block = blk }
 func (st *SeerThread) SetChannels(source <-chan []*types.Transaction, disorder <-chan *types.Transaction, txMap <-chan map[common.Hash]*types.Transaction, tip <-chan map[common.Hash]*big.Int, blkChannel <-chan *types.Block) {
 	st.txSource = source
@@ -594,8 +662,8 @@ func (st *SeerThread) SetChannels(source <-chan []*types.Transaction, disorder <
 	st.tip = tip
 	st.blkChannel = blkChannel
 }
-func (st *SeerThread) GetPredictionResults() (int, int, int) {
-	return st.totalPredictions, st.unsatisfiedPredictions, st.satisfiedTxs
+func (st *SeerThread) GetPredictionResults() (int, int, int, int, int, int) {
+	return st.cTotalPredictions, st.nTotalPredictions, st.cUnsatisfiedPredictions, st.nUnsatisfiedPredictions, st.cSatisfiedTxs, st.nSatisfiedTxs
 }
 func (st *SeerThread) GetVarTable() *vm.VarTable                   { return st.varTable }
 func (st *SeerThread) GetMVCache() *state.MVCache                  { return st.mvCache }

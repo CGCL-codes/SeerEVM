@@ -100,6 +100,18 @@ func branchRecord(pc, jumpPc uint64, interpreter *EVMInterpreter, scope *ScopeCo
 		var entry *Entry
 		txID := interpreter.evm.TxContext.ID
 		ret, _ := interpreter.evm.PreExecutionTable.GetResult(txID)
+		if interpreter.txGasDistribution != nil {
+			switch interpreter.txGasDistribution[txID] {
+			case 0:
+				interpreter.evm.VarTable.StateRelatedForCTxs0++
+			case 1:
+				interpreter.evm.VarTable.StateRelatedForCTxs1++
+			case 2:
+				interpreter.evm.VarTable.StateRelatedForCTxs2++
+			case 3:
+				interpreter.evm.VarTable.StateRelatedForCTxs3++
+			}
+		}
 		// cache the current snapshot before branch
 		if interpreter.checkpoint {
 			ret.CacheSnapshot(scope.Stack, scope.Memory, pc, jumpPc, scope.Contract, interpreter.evm.depth)
@@ -174,6 +186,18 @@ func branchRecord(pc, jumpPc uint64, interpreter *EVMInterpreter, scope *ScopeCo
 		interpreter.evm.VarTable.StateRelated++
 		txID := interpreter.evm.TxContext.ID
 		ret, _ := interpreter.evm.PreExecutionTable.GetResult(txID)
+		if interpreter.txGasDistribution != nil {
+			switch interpreter.txGasDistribution[txID] {
+			case 0:
+				interpreter.evm.VarTable.StateRelatedForCTxs0++
+			case 1:
+				interpreter.evm.VarTable.StateRelatedForCTxs1++
+			case 2:
+				interpreter.evm.VarTable.StateRelatedForCTxs2++
+			case 3:
+				interpreter.evm.VarTable.StateRelatedForCTxs3++
+			}
+		}
 		// cache the current snapshot before branch
 		if interpreter.checkpoint {
 			ret.CacheSnapshot(scope.Stack, scope.Memory, pc, jumpPc, scope.Contract, interpreter.evm.depth)
@@ -1269,6 +1293,19 @@ func popSload(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]b
 	txID := interpreter.evm.TxContext.ID
 	ret, _ := interpreter.evm.PreExecutionTable.GetResult(txID)
 	ret.CacheReadSet(scope.Contract.Address(), &hash)
+	if interpreter.fullStorage {
+		tip := interpreter.evm.TxContext.GasTip
+		_, err := interpreter.evm.MVCache.SetStorageForWrite(scope.Contract.Address(), tmpLoc,
+			*loc, txID, tip)
+		if err != nil {
+			return nil, err
+		}
+		_, err2 := interpreter.evm.MVCache.SetCompactedStorageForWrite(scope.Contract.Address(), tmpLoc,
+			*loc, offset, txID, tip)
+		if err2 != nil {
+			return nil, err
+		}
+	}
 	return nil, nil
 }
 
@@ -1348,7 +1385,7 @@ func popSstore(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]
 	ret.CacheSStoreInfo(scope.Contract.Address(), updatedVal, locUnit.Copy(), valUnit.Copy(), isCompact)
 
 	// 只有已经记录的与分支相关的变量才会被多版本缓存存储
-	if interpreter.evm.VarTable.VarExist(scope.Contract.Address(), loc.Bytes32(), offset) {
+	if interpreter.fullStorage || interpreter.evm.VarTable.VarExist(scope.Contract.Address(), loc.Bytes32(), offset) {
 		tip := interpreter.evm.TxContext.GasTip
 		if isCompact {
 			repair, err = interpreter.evm.MVCache.SetCompactedStorageForWrite(scope.Contract.Address(), loc,

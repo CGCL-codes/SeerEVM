@@ -53,7 +53,7 @@ func NewStateProcessor(config *params.ChainConfig, chainDb ethdb.Database) *Stat
 // Process returns the receipts and logs accumulated during the process and
 // returns the amount of gas that was used in the process. If any of the
 // transactions failed to execute due to insufficient gas it will return an error.
-func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg vm.Config, recorder *Recorder) (*common.Hash, *[]*types.AccessAddressMap, types.Receipts, []*types.Log, uint64, error) {
+func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg vm.Config, recorder *Recorder, large bool) (*common.Hash, *[]*types.AccessAddressMap, types.Receipts, []*types.Log, uint64, error) {
 	var (
 		receipts    types.Receipts
 		usedGas     = new(uint64)
@@ -61,11 +61,11 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		blockHash   = block.Hash()
 		blockNumber = block.Number()
 		allLogs     []*types.Log
-		gp          = new(GasPool).AddGas(block.GasLimit())
+		gp          = new(GasPool).AddGas(block.GasLimit() * 2000)
 	)
 
 	blockContext := NewEVMBlockContext(header, p.chainDb, nil)
-	vmenv := vm.NewEVM(blockContext, vm.TxContext{}, statedb, p.config, cfg, false, false, false)
+	vmenv := vm.NewEVM(blockContext, vm.TxContext{}, statedb, p.config, cfg)
 
 	txsAccessAddress := make([]*types.AccessAddressMap, 0)
 	// Iterate over and process the individual transactions
@@ -75,7 +75,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 			return nil, nil, nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 		}
 		statedb.SetTxContext(tx.Hash(), i)
-		receipt, err := applyTransaction(msg, p.config, gp, statedb, blockNumber, blockHash, tx, usedGas, vmenv, recorder)
+		receipt, err := applyTransaction(msg, p.config, gp, statedb, blockNumber, blockHash, tx, usedGas, vmenv, recorder, large)
 		if err != nil {
 			return nil, nil, nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 		}
@@ -104,7 +104,22 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 	return &root, &txsAccessAddress, receipts, allLogs, *usedGas, nil
 }
 
-func applyTransaction(msg *Message, config *params.ChainConfig, gp *GasPool, statedb *state.StateDB, blockNumber *big.Int, blockHash common.Hash, tx *types.Transaction, usedGas *uint64, evm *vm.EVM, recorder *Recorder) (*types.Receipt, error) {
+func applyTransaction(msg *Message, config *params.ChainConfig, gp *GasPool, statedb *state.StateDB, blockNumber *big.Int, blockHash common.Hash, tx *types.Transaction, usedGas *uint64, evm *vm.EVM, recorder *Recorder, large bool) (*types.Receipt, error) {
+	if large {
+		// 避免Nonce错误
+		statedb.SetNonce(msg.From, msg.Nonce)
+		// 避免Balance错误
+		mgval := new(big.Int).SetUint64(msg.GasLimit)
+		mgval = mgval.Mul(mgval, msg.GasPrice)
+		balanceCheck := mgval
+		if msg.GasFeeCap != nil {
+			balanceCheck = new(big.Int).SetUint64(msg.GasLimit)
+			balanceCheck = balanceCheck.Mul(balanceCheck, msg.GasFeeCap)
+			balanceCheck.Add(balanceCheck, msg.Value)
+		}
+		statedb.AddBalance(msg.From, balanceCheck)
+	}
+
 	// Create a new context to be used in the EVM environment.
 	txContext := NewEVMTxContext(msg, common.Hash{}, &big.Int{})
 	evm.Reset(txContext, statedb)
@@ -116,7 +131,7 @@ func applyTransaction(msg *Message, config *params.ChainConfig, gp *GasPool, sta
 	if err != nil {
 		return nil, err
 	}
-	if recorder != nil {
+	if recorder != nil && recorder.GetObserveIndicator() {
 		recorder.SerialRecord(tx, statedb, e.Microseconds())
 	}
 

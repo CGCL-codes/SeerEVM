@@ -6,7 +6,14 @@
       <paths name="aws">
         <serverdata>
           <mappings>
-            <mapping deploy="/home/ubuntu/Seer" local="$PROJECT_DIR$" web="/" />
+            <mapping deploy="/home/ubuntu/SeerEVM" local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="fuzh">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/SeerEVM" local="$PROJECT_DIR$" web="/" />
           </mappings>
         </serverdata>
       </paths>

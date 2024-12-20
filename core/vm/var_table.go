@@ -11,25 +11,33 @@ import (
 
 const sweepRound = 70
 const statisticsRound = 200
-const threshold = 0.2
+const threshold = 0.1
 
 // VarTable records the information of branch relevant to state variables
 type VarTable struct {
 	Space map[common.Address]*SubTable
 	Epoch int
 	// for test the ratio of state variable-related branches
-	BranchNum    int
-	StateRelated int
-	txNum        int
+	BranchNum            int
+	StateRelatedForCTxs0 int
+	StateRelatedForCTxs1 int
+	StateRelatedForCTxs2 int
+	StateRelatedForCTxs3 int
+	StateRelated         int
+	txNum                int
 }
 
 func CreateNewTable() *VarTable {
 	return &VarTable{
-		Space:        make(map[common.Address]*SubTable),
-		Epoch:        0,
-		BranchNum:    0,
-		StateRelated: 0,
-		txNum:        0,
+		Space:                make(map[common.Address]*SubTable),
+		Epoch:                0,
+		BranchNum:            0,
+		StateRelatedForCTxs0: 0,
+		StateRelatedForCTxs1: 0,
+		StateRelatedForCTxs2: 0,
+		StateRelatedForCTxs3: 0,
+		StateRelated:         0,
+		txNum:                0,
 	}
 }
 

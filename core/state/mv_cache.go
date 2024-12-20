@@ -73,7 +73,7 @@ func (mvc *MVCache) ClearCache() {
 	mvc.Dirties = make(map[common.Address]map[common.Hash]struct{})
 	// sweep the cache every $round$ epoch
 	if mvc.Epoch%mvc.Sweeper.getRound() == 0 {
-		go mvc.Sweeper.sweep(mvc.Epoch, mvc.Cache)
+		mvc.Sweeper.sweep(mvc.Epoch, mvc.Cache)
 	}
 }
 
@@ -336,20 +336,22 @@ func newCompactedStorage() *compactedStorage {
 }
 
 type mvRecord struct {
-	rRecord *list.List
-	wRecord *list.List
-	rLoc    *list.Element // latest location of read (itself)
-	wLoc    *list.Element // latest location of write (itself)
+	rRecord    *list.List
+	wRecord    *list.List
+	rLoc       *list.Element // latest location of read (itself)
+	wLoc       *list.Element // latest location of write (itself)
+	readRepair bool
 }
 
 func newMVRecord() *mvRecord {
 	rRecord := list.New()
 	wRecord := list.New()
 	return &mvRecord{
-		rRecord: rRecord,
-		wRecord: wRecord,
-		rLoc:    nil,
-		wLoc:    nil,
+		rRecord:    rRecord,
+		wRecord:    wRecord,
+		rLoc:       nil,
+		wLoc:       nil,
+		readRepair: false,
 	}
 }
 
@@ -367,8 +369,7 @@ func (r *mvRecord) insertReadRecord(txID common.Hash, tip *big.Int) error {
 	newVer := &ReadVersion{txID: txID, tip: tip}
 	counter := r.rRecord.Len()
 	if counter == 0 {
-		curE := r.rRecord.PushBack(newVer)
-		r.rLoc = curE
+		r.rRecord.PushBack(newVer)
 		return nil
 	}
 	for e := r.rRecord.Back(); e != nil; e = e.Prev() {
@@ -376,15 +377,13 @@ func (r *mvRecord) insertReadRecord(txID common.Hash, tip *big.Int) error {
 		if !ok {
 			return errors.New("wrong version format")
 		}
-		if (tip.Cmp(ver.GetTip()) == 1) || (tip.Cmp(ver.GetTip()) == 0 && strings.Compare(txID.String(), ver.txID.String()) != 0) {
-			// 待插入交易的交易费高于某个交易元素或者两个交易的交易费相同，插入到此交易元素之后
-			curE := r.rRecord.InsertAfter(newVer, e)
-			r.rLoc = curE
+		if (tip.Cmp(ver.GetTip()) == -1) || (tip.Cmp(ver.GetTip()) == 0 && strings.Compare(txID.String(), ver.txID.String()) != 0) {
+			// 待插入交易的交易费小于某个交易元素或者两个交易的交易费相同，插入到此交易元素之后
+			r.rRecord.InsertAfter(newVer, e)
 			break
-		} else if counter == 1 && tip.Cmp(ver.GetTip()) == -1 {
+		} else if counter == 1 && tip.Cmp(ver.GetTip()) == 1 {
 			// 插入列表的第一位
-			curE := r.rRecord.InsertBefore(newVer, e)
-			r.rLoc = curE
+			r.rRecord.InsertBefore(newVer, e)
 			break
 		} else if strings.Compare(txID.String(), ver.txID.String()) == 0 {
 			// 发现列表中已经插入该交易元素，退出
@@ -395,7 +394,41 @@ func (r *mvRecord) insertReadRecord(txID common.Hash, tip *big.Int) error {
 	return nil
 }
 
+// checkReadRecord used for repair check
+func (r *mvRecord) checkReadRecord(tip *big.Int) (bool, error) {
+	counter := r.rRecord.Len()
+	if counter == 0 {
+		return false, nil
+	}
+	for e := r.rRecord.Back(); e != nil; e = e.Prev() {
+		ver, ok := e.Value.(*ReadVersion)
+		if !ok {
+			return false, errors.New("wrong version format")
+		}
+		if (tip.Cmp(ver.GetTip()) == -1) || (tip.Cmp(ver.GetTip()) == 0) {
+			r.rLoc = e.Next()
+			if r.rLoc != nil {
+				return true, nil
+			}
+			break
+		} else if counter == 1 && tip.Cmp(ver.GetTip()) == 1 {
+			r.rLoc = e
+			return true, nil
+		}
+		counter--
+	}
+	return false, nil
+}
+
+// 插入写版本，队尾还有元素，修复队尾那些交易，并修复所有读了队尾那些交易的交易 (不考虑级联修复)；
+// 并检查是否有交易读了比此版本小的版本，如果交易的排序更后的话，修复这些交易
+// 综上，只需要检查读版本中是否有交易排序在插入写版本交易的后面，这些交易将被修复
 func (r *mvRecord) insertWriteRecord(txID common.Hash, value uint256.Int, tip *big.Int) (bool, error) {
+	readRepair, err := r.checkReadRecord(tip)
+	r.readRepair = readRepair
+	if err != nil {
+		return false, err
+	}
 	newVer := &WriteVersion{txID: txID, value: value, tip: tip}
 	counter := r.wRecord.Len()
 	if counter == 0 {
@@ -408,16 +441,16 @@ func (r *mvRecord) insertWriteRecord(txID common.Hash, value uint256.Int, tip *b
 		if !ok {
 			return false, errors.New("wrong version format")
 		}
-		if (tip.Cmp(ver.GetTip()) == 1) || (tip.Cmp(ver.GetTip()) == 0 && strings.Compare(txID.String(), ver.txID.String()) != 0) {
-			// 待插入交易的交易费高于某个交易元素或者两个交易的交易费相同，插入到此交易元素之后
+		if (tip.Cmp(ver.GetTip()) == -1) || (tip.Cmp(ver.GetTip()) == 0 && strings.Compare(txID.String(), ver.txID.String()) != 0) {
+			// 待插入交易的交易费小于某个交易元素或者两个交易的交易费相同，插入到此交易元素之后
 			curE := r.wRecord.InsertAfter(newVer, e)
 			r.wLoc = curE
 			// 通知需要将后面的交易进行预执行修复
-			if curE.Next() != nil {
+			if curE.Next() != nil || r.readRepair {
 				return true, nil
 			}
 			break
-		} else if counter == 1 && tip.Cmp(ver.GetTip()) == -1 {
+		} else if counter == 1 && tip.Cmp(ver.GetTip()) == 1 {
 			// 插入列表的第一位
 			curE := r.wRecord.InsertBefore(newVer, e)
 			r.wLoc = curE
@@ -439,8 +472,8 @@ func (r *mvRecord) getWriteVersion(tip *big.Int) (*WriteVersion, error) {
 		if !ok {
 			return nil, errors.New("wrong version format")
 		}
-		if tip.Cmp(ver.GetTip()) == 1 || tip.Cmp(ver.GetTip()) == 0 {
-			// 遇到费用比自己小的交易或者费用相等的交易，直接读取其写入的版本
+		if tip.Cmp(ver.GetTip()) == -1 || tip.Cmp(ver.GetTip()) == 0 {
+			// 遇到费用比自己大的交易或者费用相等的交易，直接读取其写入的版本
 			return ver, nil
 		}
 	}
@@ -492,8 +525,9 @@ func (r *mvRecord) outputTXsFromRecord(txMap map[common.Hash]struct{}) ([]common
 		}
 	}
 
-	if r.rLoc != nil {
-		for e := r.rLoc.Next(); e != nil; e = e.Next() {
+	if r.readRepair && r.rLoc != nil {
+		r.readRepair = false
+		for e := r.rLoc; e != nil; e = e.Next() {
 			ver, ok := e.Value.(*ReadVersion)
 			if !ok {
 				return nil, errors.New("wrong version format")

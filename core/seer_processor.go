@@ -65,7 +65,7 @@ func applyNormalTransaction(msg *Message, gp *GasPool, statedb *state.SeerTransa
 }
 
 // applySeerTransaction pre-executes a transaction to cache fast path info and conduct pre-execution repair if necessary
-func applySeerTransaction(msg *Message, gp *GasPool, evm *vm.EVM, txSet map[common.Hash]*types.Transaction, tipMap map[common.Hash]*big.Int, enableRepair, enablePerceptron, storeCheckpoint bool) error {
+func applySeerTransaction(msg *Message, gp *GasPool, evm *vm.EVM, txSet map[common.Hash]*types.Transaction, tipMap map[common.Hash]*big.Int, enableRepair, enablePerceptron, storeCheckpoint, fullStorage bool) error {
 	if _, err := ApplyMessage(evm, msg, gp); err != nil {
 		return err
 	}
@@ -90,11 +90,12 @@ func applySeerTransaction(msg *Message, gp *GasPool, evm *vm.EVM, txSet map[comm
 				}
 			}
 			txs := sortTXs(repairedTXs, txSet, tipMap)
+			fmt.Println("repair", len(repairedTXs), len(txs))
 			for _, t := range txs {
 				ret, _ := evm.PreExecutionTable.GetResult(t.Hash())
 				txContext := ret.GetTxContext()
 				vmenv := vm.NewEVM2(evm.Context, txContext, evm.StateDB, evm.VarTable, evm.PreExecutionTable,
-					evm.MVCache, evm.ChainConfig(), vm.Config{EnablePreimageRecording: false}, true, enablePerceptron, storeCheckpoint)
+					evm.MVCache, evm.ChainConfig(), vm.Config{EnablePreimageRecording: false}, true, enablePerceptron, storeCheckpoint, fullStorage, nil)
 				vmenv.Interpreter().SetFastEnabled()
 				if err3 := repair(txContext, vmenv, t, ret); err3 != nil {
 					return err3
@@ -124,8 +125,22 @@ func applyFastPath(msg *Message, tx *types.Transaction, evm *vm.EVM, result *vm.
 		s := time.Now()
 		isContractCall = true
 		brs := result.GetBranches()
+
+		if recorder != nil && recorder.GetObserveIndicator() {
+			if len(brs) > 4 {
+				recorder.AppendComplicatedTx(tx.Hash())
+			}
+		}
+
 		for _, br := range brs {
-			thread.IncrementTotal()
+			if recorder != nil && !recorder.GetObserveIndicator() {
+				complicatedTxs := recorder.GetComplicatedMap()
+				if _, ok := complicatedTxs[tx.Hash()]; ok {
+					thread.IncrementCTotal()
+				} else {
+					thread.IncrementNTotal()
+				}
+			}
 			// update the sstore info
 			sstores := br.GetSstoreInfo()
 			for _, sstore := range sstores {
@@ -152,7 +167,14 @@ func applyFastPath(msg *Message, tx *types.Transaction, evm *vm.EVM, result *vm.
 			}
 
 			if !isAccurate {
-				thread.IncrementUnsatisfied()
+				if recorder != nil && !recorder.GetObserveIndicator() {
+					complicatedTxs := recorder.GetComplicatedMap()
+					if _, ok := complicatedTxs[tx.Hash()]; ok {
+						thread.IncrementCUnsatisfied()
+					} else {
+						thread.IncrementNUnsatisfied()
+					}
+				}
 				if !enableFast {
 					res, err = ApplyMessage(evm, msg, gp)
 					if err != nil {
@@ -224,7 +246,14 @@ func applyFastPath(msg *Message, tx *types.Transaction, evm *vm.EVM, result *vm.
 		}
 		// all the branches are satisfied, execute the snapshot
 		if !isBreak {
-			thread.IncrementSatisfiedTxs()
+			if recorder != nil && !recorder.GetObserveIndicator() {
+				complicatedTxs := recorder.GetComplicatedMap()
+				if _, ok := complicatedTxs[tx.Hash()]; ok {
+					thread.IncrementCSatisfiedTxs()
+				} else {
+					thread.IncrementNSatisfiedTxs()
+				}
+			}
 			finalSnapshot := result.GetFinalSnapshot()
 			// in case that some contract exists without using the exist-relevant opcodes
 			if finalSnapshot != nil {
@@ -245,7 +274,7 @@ func applyFastPath(msg *Message, tx *types.Transaction, evm *vm.EVM, result *vm.
 			}
 		}
 		e := time.Since(s)
-		if recorder != nil {
+		if recorder != nil && recorder.GetObserveIndicator() {
 			recorder.SeerRecord(tx, e.Microseconds())
 		}
 	}
@@ -357,19 +386,20 @@ func sortTXs(repairedTXs []common.Hash, txSet map[common.Hash]*types.Transaction
 	var (
 		identicalTXMap = make(map[common.Hash]struct{})
 		output         []*types.Transaction
-		index          int
 	)
 
-	for _, txID := range repairedTXs {
-		tx := txSet[txID]
-		if index == 0 {
+	for i, txID := range repairedTXs {
+		tx, exist := txSet[txID]
+		if !exist {
+			continue
+		}
+		if i == 0 {
 			output = append(output, tx)
 			identicalTXMap[txID] = struct{}{}
-			index++
 			continue
 		}
 
-		if _, exist := identicalTXMap[txID]; !exist {
+		if _, exist2 := identicalTXMap[txID]; !exist2 {
 			tip := tipMap[txID]
 			insertLoc := sort.Search(len(output), func(j int) bool {
 				comparedTip := tipMap[output[j].Hash()]
@@ -637,7 +667,7 @@ func IsContract(stateDB vm.StateDB, addr *common.Address) bool {
 	return size > 0
 }
 
-func DCCDA(txNum int, Htxs *minHeap.TxsHeap, Hready *minHeap.ReadyHeap, Hcommit *minHeap.CommitHeap, stateDb *state.SeerStateDB, dg dependencyGraph.DependencyGraph) (time.Duration, float64) {
+func DCCDA(txNum int, Htxs *minHeap.TxsHeap, Hready *minHeap.ReadyHeap, Hcommit *minHeap.CommitHeap, stateDb *state.SeerStateDB, dg dependencyGraph.DependencyGraph, complicatedTXs map[int]struct{}) (time.Duration, float64, float64) {
 	// 按照论文的说法，如果没有给定交易依赖图，那么所有交易的sv(storageVersion)就默认设置为-1，否则设置为交易的依赖中序号最大的那个
 	abortedMap := make(map[int]int)
 
@@ -685,7 +715,7 @@ func DCCDA(txNum int, Htxs *minHeap.TxsHeap, Hready *minHeap.ReadyHeap, Hcommit 
 			}
 
 			// 验证依赖版本sv+1到id-1所有交易有没有存在写的行为
-			aborted := stateDb.ValidateReadSet(txToCommit.LastReads, txToCommit.StorageVersion, txToCommit.Index)
+			aborted := stateDb.ValidateReadSet(txToCommit.LastReads, txToCommit.StorageVersion)
 			if aborted {
 				abortedMap[txToCommit.Index]++
 				Htxs.Push(txToCommit.Index-1, txToCommit.Index, txToCommit.Incarnation+1)
@@ -698,13 +728,19 @@ func DCCDA(txNum int, Htxs *minHeap.TxsHeap, Hready *minHeap.ReadyHeap, Hcommit 
 	e := time.Since(t)
 	fmt.Printf("Concurrent execution latency：%s\n", e)
 
-	abortedNum := 0
-	abortedTxNum := 0
-	for _, num := range abortedMap {
-		abortedNum += num
-		abortedTxNum++
+	abortedCNum := 0
+	abortedNNum := 0
+	if complicatedTXs != nil {
+		for index := range abortedMap {
+			if _, exist := complicatedTXs[index]; exist {
+				abortedCNum++
+			} else {
+				abortedNNum++
+			}
+		}
 	}
-	abortRate := float64(abortedTxNum) / float64(txNum)
+	abortRateC := float64(abortedCNum) / float64(txNum)
+	abortRateN := float64(abortedNNum) / float64(txNum)
 
-	return e, abortRate
+	return e, abortRateC, abortRateN
 }

@@ -3,7 +3,14 @@
   <component name="WebServers">
     <option name="servers">
       <webServer id="09eb30fe-fe1f-426d-b068-cdeb54ed19e2" name="aws">
-        <fileTransfer accessType="SFTP" host="ec2-52-71-199-24.compute-1.amazonaws.com" port="22" sshConfigId="f2b6a140-fcd2-4ec8-a1a6-c4df5e39bcfa" sshConfig="ubuntu@ec2-52-71-199-24.compute-1.amazonaws.com:22 key" keyPair="true">
+        <fileTransfer accessType="SFTP" host="ec2-54-165-46-91.compute-1.amazonaws.com" port="22" sshConfigId="c5c22658-c99d-43f4-ac62-3d268542e062" sshConfig="ubuntu@ec2-54-165-46-91.compute-1.amazonaws.com:22 key" keyPair="true">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" keepAliveTimeout="0" passiveMode="true" shareSSLContext="true" isUseRsync="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+      <webServer id="7c99b22a-0352-4d3a-97cb-e81b9d0ff5ce" name="fuzh">
+        <fileTransfer rootFolder="/home/fuzh" accessType="SFTP" host="222.20.94.68" port="50016" sshConfigId="af522782-660b-42d5-8c0e-1227f83bd1bf" sshConfig="fuzh@222.20.94.68:50016 key" keyPair="true">
           <advancedOptions>
             <advancedOptions dataProtectionLevel="Private" keepAliveTimeout="0" passiveMode="true" shareSSLContext="true" isUseRsync="true" />
           </advancedOptions>

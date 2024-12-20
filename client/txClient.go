@@ -3,7 +3,6 @@ package client
 import (
 	"fmt"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"math/big"
 	"math/rand"
@@ -71,13 +70,14 @@ func (fc *FakeClient) generateTxs(db ethdb.Database, txNum int, startingHeight, 
 	}
 }
 
-func (fc *FakeClient) Run(db ethdb.Database, txNum int, startingHeight, offset int64, directlyUsed, largeBlock, preTest bool, blk *types.Block, ratio float64) *types.Block {
+func (fc *FakeClient) Run(db ethdb.Database, txNum int, startingHeight, offset int64, directlyUsed, largeBlock bool, blk *types.Block, tipMap map[common.Hash]*big.Int, ratio float64) *types.Block {
 	// 将交易分为两部分，一部分是先发送的，以ratio概率随机选择一部分交易滞后发送，模拟乱序过程
 	var newTxs []*types.Transaction
 	var sortedTxs []*types.Transaction
 	var disorderTxs []*types.Transaction
 	var txMap = make(map[common.Hash]*types.Transaction)
-	var tipMap = make(map[common.Hash]*big.Int)
+	var sentDisorderedTxs = make(map[int]struct{})
+	var sentNum int
 
 	if !directlyUsed {
 		blk, _ = fc.generateTxs(db, txNum, startingHeight, offset, largeBlock)
@@ -85,9 +85,6 @@ func (fc *FakeClient) Run(db ethdb.Database, txNum int, startingHeight, offset i
 		fc.Block <- blk
 		fc.Txs = blk.Transactions()
 	}
-
-	source := rand.NewSource(time.Now().UnixNano())
-	r := rand.New(source)
 
 	for _, tx := range fc.Txs {
 		// avoid some txs that have been sent
@@ -97,12 +94,11 @@ func (fc *FakeClient) Run(db ethdb.Database, txNum int, startingHeight, offset i
 		} else {
 			fc.alreadySend[tx.Hash().String()] = struct{}{}
 		}
-
 		txMap[tx.Hash()] = tx
-		tip := math.BigMin(tx.GasTipCap(), new(big.Int).Sub(tx.GasFeeCap(), blk.BaseFee()))
-		tipMap[tx.Hash()] = tip
 
-		if r.Float64() <= ratio {
+		source := rand.NewSource(time.Now().UnixNano())
+		r := rand.New(source)
+		if r.Float64() < ratio {
 			disorderTxs = append(disorderTxs, tx)
 		} else {
 			newTxs = append(newTxs, tx)
@@ -111,11 +107,11 @@ func (fc *FakeClient) Run(db ethdb.Database, txNum int, startingHeight, offset i
 
 	// firstly sort txs in newTxs
 	for i, tx := range newTxs {
+		tip := tipMap[tx.Hash()]
 		if i == 0 {
 			sortedTxs = append(sortedTxs, tx)
 			continue
 		}
-		tip := tipMap[tx.Hash()]
 		insertLoc := sort.Search(len(sortedTxs), func(j int) bool {
 			comparedTip := tipMap[sortedTxs[j].Hash()]
 			if tip.Cmp(comparedTip) > 0 {
@@ -131,19 +127,25 @@ func (fc *FakeClient) Run(db ethdb.Database, txNum int, startingHeight, offset i
 	fc.Tip <- tipMap
 	fc.TxSource <- sortedTxs
 
-	if preTest {
-		time.Sleep(100 * time.Millisecond)
-	} else {
-		time.Sleep(200 * time.Millisecond)
-	}
+	time.Sleep(100 * time.Millisecond)
 
-	for _, disorderTx := range disorderTxs {
-		fc.Disorder <- disorderTx
-		if preTest {
-			time.Sleep(time.Millisecond)
-		} else {
-			time.Sleep(2 * time.Millisecond)
+	for {
+		// 将disorder乱序
+		if sentNum == len(disorderTxs) {
+			break
 		}
+		source := rand.NewSource(time.Now().UnixNano())
+		r := rand.New(source)
+		randomIndex := r.Intn(len(disorderTxs))
+		if _, ok := sentDisorderedTxs[randomIndex]; !ok {
+			sentDisorderedTxs[randomIndex] = struct{}{}
+		} else {
+			continue
+		}
+		disorderTx := disorderTxs[randomIndex]
+		fc.Disorder <- disorderTx
+		sentNum++
+		time.Sleep(time.Millisecond)
 	}
 
 	return blk

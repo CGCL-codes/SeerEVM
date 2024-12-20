@@ -135,7 +135,7 @@ type EVM struct {
 
 // NewEVM returns a new EVM. The returned EVM is not thread safe and should
 // only ever be used *once*.
-func NewEVM(blockCtx BlockContext, txCtx TxContext, statedb StateDB, chainConfig *params.ChainConfig, config Config, isPreExecution, isPerceptron, checkpoint bool) *EVM {
+func NewEVM(blockCtx BlockContext, txCtx TxContext, statedb StateDB, chainConfig *params.ChainConfig, config Config) *EVM {
 	evm := &EVM{
 		Context:     blockCtx,
 		TxContext:   txCtx,
@@ -144,11 +144,11 @@ func NewEVM(blockCtx BlockContext, txCtx TxContext, statedb StateDB, chainConfig
 		chainConfig: chainConfig,
 		chainRules:  chainConfig.Rules(blockCtx.BlockNumber, blockCtx.Random != nil, blockCtx.Time),
 	}
-	evm.interpreter = NewEVMInterpreter(evm, isPreExecution, isPerceptron, checkpoint)
+	evm.interpreter = NewEVMInterpreter(evm, false, false, false, false, nil)
 	return evm
 }
 
-func NewEVM2(blockCtx BlockContext, txCtx TxContext, statedb StateDB, varTable *VarTable, preExecutionTable *PreExecutionTable, mvCache *state.MVCache, chainConfig *params.ChainConfig, config Config, isPreExecution, isPerceptron, checkpoint bool) *EVM {
+func NewEVM2(blockCtx BlockContext, txCtx TxContext, statedb StateDB, varTable *VarTable, preExecutionTable *PreExecutionTable, mvCache *state.MVCache, chainConfig *params.ChainConfig, config Config, isPreExecution, isPerceptron, checkpoint, fullStorage bool, txGasDistribution map[common.Hash]int) *EVM {
 	evm := &EVM{
 		Context:           blockCtx,
 		TxContext:         txCtx,
@@ -160,7 +160,7 @@ func NewEVM2(blockCtx BlockContext, txCtx TxContext, statedb StateDB, varTable *
 		chainConfig:       chainConfig,
 		chainRules:        chainConfig.Rules(blockCtx.BlockNumber, blockCtx.Random != nil, blockCtx.Time),
 	}
-	evm.interpreter = NewEVMInterpreter(evm, isPreExecution, isPerceptron, checkpoint)
+	evm.interpreter = NewEVMInterpreter(evm, isPreExecution, isPerceptron, checkpoint, fullStorage, txGasDistribution)
 	return evm
 }
 

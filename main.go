@@ -15,8 +15,13 @@ const (
 	TestConcurrent
 	TestAbort
 	TestBreakDown
-	TestMemoryCostBaseline
-	TestMemoryCost
+	TestMemoryCPUBaseline
+	TestMemoryCPU
+	BranchStatistics
+	TestMemoryCPUSweep
+	TestIOBaseline
+	TestIO
+	TestMemoryCPUConcurrent
 )
 
 type SeerRun struct {
@@ -31,6 +36,7 @@ type SeerRun struct {
 	EnablePerceptron bool
 	EnableFast       bool
 	StoreCheckpoint  bool
+	FullStorage      bool
 }
 
 func (sr *SeerRun) Run() {
@@ -106,6 +112,13 @@ func (sr *SeerRun) Run() {
 				Usage:       "Whether to enable checkpoint caching",
 				Destination: &sr.StoreCheckpoint,
 			},
+			&cli.BoolFlag{
+				Name:        "fullStorage",
+				Aliases:     []string{"fs"},
+				Value:       false,
+				Usage:       "Whether to store all state variable versions",
+				Destination: &sr.FullStorage,
+			},
 		},
 	}
 
@@ -122,7 +135,7 @@ func main() {
 
 	switch seer.TestIndicator {
 	case TestPreExecutionLarge:
-		experiments.TestPreExecutionLarge(seer.TxNum, seer.StartingBlock, seer.BlockNum, seer.DisorderRatio)
+		experiments.TestPreExecutionLarge(seer.TxNum, seer.StartingBlock, seer.BlockNum, seer.DisorderRatio, seer.EnableRepair)
 	case TestPrediction:
 		experiments.TestPredictionSuccess(seer.StartingBlock, seer.BlockNum, 0)
 	case TestSpeedup:
@@ -133,9 +146,19 @@ func main() {
 		experiments.TestSeerConcurrentAbort(seer.Threads, seer.TxNum, seer.BlockNum)
 	case TestBreakDown:
 		experiments.TestSeerBreakDown(seer.StartingBlock, seer.BlockNum, seer.DisorderRatio, seer.EnableRepair, seer.EnablePerceptron, seer.EnableFast)
-	case TestMemoryCostBaseline:
-		experiments.TestMemoryBaseline(seer.StartingBlock, seer.BlockNum)
-	case TestMemoryCost:
-		experiments.TestMemoryBreakDown(seer.StartingBlock, seer.BlockNum, seer.EnablePerceptron, seer.EnableFast, seer.StoreCheckpoint)
+	case TestMemoryCPUBaseline:
+		experiments.TestMemoryCPUBaseline(seer.StartingBlock, seer.BlockNum)
+	case TestMemoryCPU:
+		experiments.TestMemoryCPUBreakDown(seer.StartingBlock, seer.BlockNum, seer.EnableRepair, seer.EnablePerceptron, seer.EnableFast, seer.StoreCheckpoint, seer.FullStorage)
+	case BranchStatistics:
+		experiments.TestGasUsed(seer.StartingBlock, seer.BlockNum)
+	case TestMemoryCPUSweep:
+		experiments.TestMemoryCPUSweep(seer.StartingBlock, seer.BlockNum)
+	case TestIOBaseline:
+		experiments.TestIOBaseline(seer.StartingBlock, seer.BlockNum)
+	case TestIO:
+		experiments.TestIOSeer(seer.StartingBlock, seer.BlockNum)
+	case TestMemoryCPUConcurrent:
+		experiments.TestMemoryCPUConcurrent(seer.Threads, seer.StartingBlock, seer.BlockNum)
 	}
 }
