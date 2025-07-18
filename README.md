@@ -1,4 +1,7 @@
+![Go](https://img.shields.io/badge/go-1.20+-blue?logo=go) ![License](https://img.shields.io/badge/license-Apache-blue)
+
 ## Description
+
 The repository hosts the implementation of SeerEVM, an advanced transaction execution engine for EVM-compatible blockchains.
 
 SeerEVM incorporates fine-grained branch prediction to fully exploit pre-execution effectiveness. Seer predicts state-related branches using a two-level prediction approach, reducing inconsistent execution paths more efficiently than executing all possible branches. To enable effective reuse of pre-execution results, Seer employs checkpoint-based fast-path execution, enhancing transaction execution for both successful and unsuccessful predictions.
@@ -29,101 +32,82 @@ export PATH=$PATH:/usr/local/go/bin
 
 ```shell script
 # Under the current directory `SeerEVM`
-go mod tidy
+$ go mod tidy
 ```
 
 **Dataset:**
 
-Due to the size of the dataset used in our paper exceeding 100 GB, we have trimmed the dataset to facilitate artifact evaluation. We provide two Ethereum datasets, each spanning 1000 blocks (including state data):
+Due to the size of the dataset used in our paper exceeding 100 GB, we have trimmed the dataset to facilitate artifact evaluation. We provide a tiny-scale of Ethereum datasets (approximately 370 MB), spanning 1000 blocks (including state data):
 
-- Block height ranging from 14,000,000 ~ 14,001,000, shown in `./ethereumdata_1400w_small`
-- Block height ranging from 14,650,000 ~ 14,651,000, shown in `./ethereumdata_1465w_small`
+- Block height ranging from 14,650,000 ~ 14,651,000, shown in `./ethereumdata_1465_small`
 
 ## Usage
 
-Here, we show how to produce the experimental results shown in our paper step by step. All the test scripts are presented in the directory `./experiments`. Note that due to the different idle state of the machine's resources, it is normal for the reproducible results to have slight deviations. 
+Here, we show how to run SeerEVM to produce several critical experimental results. All the test scripts are presented in the directory `./experiments`. Note that due to the different idle state of the machine's resources and the tiny scale of Ethereum datasets—which results in minimal disk I/O operations—it is normal for the reproducible results to have deviations with those reported in the paper.
 
 #### 1.1 Prediction accuracy
 
 Enter the directory `./experiments` and run the script `prediction_height.sh`:
 
 ```shell script
-cd experiments
-./prediction_height.sh
+$ cd experiments
+$ ./prediction_height.sh
 ```
 
-This script run would output the prediction accuracy across 1,000 blocks shown in `prediction_height.txt`, which is corresponding to Figure 10 in the paper.
+This script run would output the prediction accuracy across 1,000 blocks shown in `prediction_height.txt`. This experimental result presents the prediction accuracy of complex contract transactions (C-TXs) and normal contract transactions (N-TXs) at every 200-block offset.
 
 #### 1.2 Pre-execution latency
 
 In the current directory, run the script `pre_execution_lat_large.sh`:
 
 ```shell script
-./pre_execution_lat_large.sh
+$ ./pre_execution_lat_large.sh
 ```
 
-This script run would output the pre-execution latency under different number of transactions shown in `preExecution_large_ratio.txt`, which is corresponding to Figure 11 in the paper.
+This script run would output the pre-execution latency under different number of transactions shown in `preExecution_large_ratio.txt`. For each transaction scale, three different disorder rates (0, 0.4, 0.8) are used. Under each disorder rate, the pre-execution latency of both C-TXs and N-TXs is presented, along with the total latency of pre-executing all transactions.
 
 #### 1.3 Speedup over single transaction execution
 
 In the current directory, run the script `speedup_tx.sh`:
 
 ```shell script
-./speedup_tx.sh
+$ ./speedup_tx.sh
 ```
 
-This script run would output the speedup distribution across smart contract transactions shown in `speedup_perTx_full.txt`, which is corresponding to Figure 12 in the paper. Please note that we employ 10,000 blocks to evaluate such speedup performance in the paper. Here, we only employ 1,000 blocks for artifact evaluation. 
+This script run would output the speedup distribution across smart contract transactions shown in `speedup_perTx_full.txt`. This experimental result presents the average speedups on C-TXs and N-TXs, as well as the average speedup for all transactions. 
 
 #### 1.4 Concurrent execution performance
 
 In the current directory, run the script `con_execution_abort.sh`:
 
 ```shell script
-./con_execution_abort.sh
+$ ./con_execution_abort.sh
 ```
 
-This script run would output the abort rate under varying number of concurrent transactions shown in `concurrent_abort.txt`, which is corresponding to Table 2 in the paper. 
+This script run would output the abort rate under varying number of concurrent transactions shown in `concurrent_abort.txt`. This experimental result presents the average abort rates for C-TXs and N-TXs.
 
 Then, run the script `con_execution_speedup.sh`:
 
 ```shell script
-./con_execution_speedup.sh
+$ ./con_execution_speedup.sh
 ```
 
-This script run would output the speedup over serial execution by using different threads shown in `concurrent_speedup.txt`, which is corresponding to Figure 13 in the paper. 
+This script run would output the speedup over serial execution by using different threads shown in `concurrent_speedup.txt`. This experimental result presents the latency and throughput of SeerEVM's concurrent execution, alongside those of the serial execution for comparison. Note that, compared to the full-node storage size simulated in the paper, the dataset used here is relatively small. As a result, the reduction in disk I/O overhead achieved by SeerEVM's pre-execution over serial execution is less significant, leading to a lower speedup than reported in the paper.
 
-#### 1.5 Design breakdown
+## Citation
 
-To shorten the time to reproduce, all the evaluation scripts in this part only use 100 blocks to output the corresponding results.
+If you are interested in our work and intend to use SeerEVM in your research, please consider citing our paper. Below is the BibTex format for citation:
 
-In the current directory, run the script `design_breakdown.sh`:
-
-```shell script
-./design_breakdown.sh
+```bibtex
+@article{zhang2024seer,
+  title={Seer: Accelerating Blockchain Transaction Execution by Fine-Grained Branch Prediction},
+  author={Zhang, Shijie and Cheng, Ru and Liu, Xinpeng and Xiao, Jiang and Jin, Hai and Li, Bo},
+  journal={Proceedings of the VLDB Endowment},
+  volume={18},
+  number={3},
+  pages={822--835},
+  year={2024},
+  publisher={VLDB Endowment}
+}
 ```
 
-This script run would output the prediction accuracy and the pre-execution latency per block for each variant, shown in `prediction_breakdown_$name.txt` and `preExecution_breakdown_$name.txt`, respectively, corresponding to Figure.14 (a) and (b) in the paper. `$name` refers to different variants of Seer, i.e., `basic`, `repair`, `perceptron`. 
-
-To obtain the speedup performance under design breakdown, run the script `speedup_breakdown.sh`:
-
-```shell script
-./speedup_breakdown.sh
-```
-
-This script run would output the speedup over serial execution of different variants of Seer, shown in ``speedup_perTx_$name.txt`, corresponding to Figure.14 (c) in the paper. `$name` refers to different variants of Seer, i.e., `basic`, `repair`, `perceptron`, `full`. 
-
-#### 1.6 Memory cost
-
-In the current directory, run the script `memory_test.sh`:
-
-```shell script
-./memory_test.sh
-```
-
-Meanwhile, open anther terminal window and run the script `memory_monitor.sh` to monitor the memory usage:
-
-```shell script
-./memory_monitor.sh
-```
-
- The script `memory_test.sh` contains four rounds of evaluations for `baseline`, `Seer-basic`, `Seer-perceptron`, and `Seer`. The script `memory_monitor.sh` would end when each variant's memory test is completed. Hence,  when the memory test for each variant is completed, restart the run of the script `./memory_monitor.sh`. The memory overhead result is shown in `memory_usage.txt`, which is corresponding to Figure.14 (d) in the paper.

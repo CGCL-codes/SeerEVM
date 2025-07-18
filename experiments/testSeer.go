@@ -882,7 +882,10 @@ func TestSeerConcurrentLarge(threads, txNum int, startingHeight, offset int64) e
 			for id, write := range wSets {
 				writeSets[id] = write
 			}
+			st := time.Now()
 			_, _, _, _, _, _ = serialProcessor.Process(block, nativeDb, vm.Config{EnablePreimageRecording: false}, nil, false)
+			ed := time.Since(st)
+			serialLatency += ed.Microseconds()
 			_, _ = nativeDb.Commit(config.MainnetChainConfig.IsEIP158(startBlock.Number()))
 			break
 		} else {
@@ -900,7 +903,10 @@ func TestSeerConcurrentLarge(threads, txNum int, startingHeight, offset int64) e
 			for id, write := range wSets {
 				writeSets[id] = write
 			}
+			st := time.Now()
 			_, _, _, _, _, _ = serialProcessor.Process(block, nativeDb, vm.Config{EnablePreimageRecording: false}, nil, false)
+			ed := time.Since(st)
+			serialLatency += ed.Microseconds()
 			_, _ = nativeDb.Commit(config.MainnetChainConfig.IsEIP158(startBlock.Number()))
 		}
 		concurrentTxs = append(concurrentTxs, newTxs...)
@@ -922,7 +928,6 @@ func TestSeerConcurrentLarge(threads, txNum int, startingHeight, offset int64) e
 
 	// 新建并发执行所需的数据库IcseStateDB
 	stateDb, _ := state.NewSeerStateDB(*parentRoot, stateCache, snaps)
-	sstatebd, _ := state.New(*parentRoot, stateCache, snaps)
 	ctx, cancel := context.WithCancel(context.Background())
 	for j := 1; j <= threads/2; j++ {
 		go func(threadID int) {
@@ -933,42 +938,18 @@ func TestSeerConcurrentLarge(threads, txNum int, startingHeight, offset int64) e
 	duration, _, _ := core.DCCDA(startBlock.Transactions().Len(), Htxs, Hready, Hcommit, stateDb, dg, nil)
 	cancel()
 
-	start := time.Now()
-	_, _, _, _, _, _, err = newThread.FastExecution(sstatebd, nil, true, true, true, false, false, "")
-	if err != nil {
-		fmt.Println("execution error", err)
-	}
-	end := time.Since(start)
-
 	// Commit all cached state changes into underlying memory database.
 	_, err2 := newThread.FinalizeBlock(stateDb)
 	if err2 != nil {
 		return fmt.Errorf("finalize block error: %s", err2)
 	}
 
-	// Directly use the serial latency with I/O under a large-size state database (which we employ in the realistic experiments)
-	// This setting is only used for artifact evaluation with a small-size state database
-	switch txNum {
-	case 2000:
-		serialLatency = 2930000
-	case 4000:
-		serialLatency = 4680000
-	case 6000:
-		serialLatency = 6650000
-	case 8000:
-		serialLatency = 8020000
-	case 10000:
-		serialLatency = 9910000
-	}
-
 	speedup := float64(serialLatency) / float64(duration.Microseconds())
 	serialTPS := float64(txNum) / (float64(serialLatency) / float64(1000000))
 	concurrentTPS := float64(txNum) / (float64(duration.Microseconds()) / float64(1000000))
-	originalTPS := float64(txNum) / (float64(end.Microseconds()) / float64(1000000))
 	fmt.Fprintf(writer, "Serial latency is: %.2f, tps is: %.2f\n", float64(serialLatency)/float64(1000000), serialTPS)
 	fmt.Fprintf(writer, "Concurrent latency is: %s, tps is %.2f\n", duration, concurrentTPS)
 	fmt.Fprintf(writer, "Avg. speedup is: %.2f\n", speedup)
-	fmt.Fprintf(writer, "Original latency is %s, tps is %.2f\n", end, originalTPS)
 
 	err = writer.Flush()
 	if err != nil {
@@ -980,7 +961,7 @@ func TestSeerConcurrentLarge(threads, txNum int, startingHeight, offset int64) e
 }
 
 // TestSeerConcurrentAbort evaluates transaction abort rate under concurrent execution with the large block
-func TestSeerConcurrentAbort(threads, txNum int, offset int64) error {
+func TestSeerConcurrentAbort(threads, txNum int, startingHeight, offset int64) error {
 	file, err := os.OpenFile(exp_concurrent_abort, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {
 		fmt.Printf("open error: %v\n", err)
@@ -989,19 +970,18 @@ func TestSeerConcurrentAbort(threads, txNum int, offset int64) error {
 	writer := bufio.NewWriter(file)
 	fmt.Fprintf(writer, "===== Run Seer with %d threads under %d number of txs=====\n", threads, txNum)
 
-	//db, err := database.OpenDatabaseWithFreezer2(&config.DefaultsEthConfig)
 	db, err := database.OpenDatabaseWithFreezer(&config.DefaultsEthConfig)
 	if err != nil {
 		return fmt.Errorf("open leveldb error: %s", err)
 	}
 	defer db.Close()
 
-	blockPre, err := database.GetBlockByNumber(db, new(big.Int).SetInt64(14650000))
+	blockPre, err := database.GetBlockByNumber(db, new(big.Int).SetInt64(startingHeight))
 	if err != nil {
 		return fmt.Errorf("function GetBlockByNumber error: %s", err)
 	}
 
-	startBlock, err := database.GetBlockByNumber(db, new(big.Int).SetInt64(14650001))
+	startBlock, err := database.GetBlockByNumber(db, new(big.Int).SetInt64(startingHeight+1))
 	if err != nil {
 		return fmt.Errorf("function GetBlockByNumber error: %s", err)
 	}
@@ -1026,7 +1006,7 @@ func TestSeerConcurrentAbort(threads, txNum int, offset int64) error {
 	mvCache := state.NewMVCache(10, 0.1)
 	preTable := vm.NewPreExecutionTable()
 
-	min, max, addSpan := big.NewInt(14650001), big.NewInt(14650001+offset), big.NewInt(1)
+	min, max, addSpan := big.NewInt(startingHeight+1), big.NewInt(startingHeight+offset+1), big.NewInt(1)
 	var concurrentTxs types.Transactions
 	for i := min; i.Cmp(max) == -1; i = i.Add(i, addSpan) {
 		block, err := database.GetBlockByNumber(db, i)

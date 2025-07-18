@@ -39,10 +39,10 @@ func OpenDatabaseWithFreezer(ethConfig *config.EthConfig) (ethdb.Database, error
 // OpenDatabaseWithFreezer2 uses a new chaindata and ancient path
 func OpenDatabaseWithFreezer2(ethConfig *config.EthConfig) (ethdb.Database, error) {
 	rawConfig := &RawConfig{
-		Path:      "../ethereumdata_1400w_small/copychain",
+		Path:      "../ethereumdata_1465_small/copychain2",
 		Cache:     2048,
 		Handles:   5120,
-		Ancient:   "../ethereumdata_1400w_small/copychain/ancient",
+		Ancient:   "../ethereumdata_1465_small/copychain2/ancient",
 		Namespace: "eth/db/chaindata/",
 		ReadOnly:  false,
 	}

@@ -143,7 +143,7 @@ func main() {
 	case TestConcurrent:
 		experiments.TestSeerConcurrentLarge(seer.Threads, seer.TxNum, seer.StartingBlock, seer.BlockNum)
 	case TestAbort:
-		experiments.TestSeerConcurrentAbort(seer.Threads, seer.TxNum, seer.BlockNum)
+		experiments.TestSeerConcurrentAbort(seer.Threads, seer.TxNum, seer.StartingBlock, seer.BlockNum)
 	case TestBreakDown:
 		experiments.TestSeerBreakDown(seer.StartingBlock, seer.BlockNum, seer.DisorderRatio, seer.EnableRepair, seer.EnablePerceptron, seer.EnableFast)
 	case TestMemoryCPUBaseline:
